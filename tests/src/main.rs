@@ -1,55 +1,123 @@
-use std::{
-    future::Future,
-    sync::{Arc, Condvar, Mutex},
-    task::{Context, Poll, Wake, Waker, RawWaker, RawWakerVTable},
-    pin::Pin,
-};
+#![doc = include_str!("../README.md")]
 
-async fn demo() {
-    println!("hello");
+use std::iter::FromIterator;
+use std::str::FromStr;
+
+use proc_macro2::TokenStream;
+use quote::ToTokens;
+use syn::spanned::Spanned;
+use syn::{Error, Expr, ExprLit, ExprPath, ItemFn, Lit, MetaNameValue, Result};
+
+/// Uses [`pollster::block_on`] to enable `async fn main() {}`.
+///
+/// # Example
+///
+/// ```
+/// #[pollster::main]
+/// async fn main() {
+///     let my_fut = async {};
+///
+///     my_fut.await;
+/// }
+/// ```
+///
+/// [`pollster::block_on`]: https://docs.rs/pollster/0.3.0/pollster/fn.block_on.html
+#[proc_macro_attribute]
+pub fn main(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let item = TokenStream::from(item);
+    let backup = item.clone();
+
+    match common(attr.into(), item) {
+        Ok(output) => output.into_token_stream().into(),
+        Err(error) => TokenStream::from_iter([error.into_compile_error(), backup]).into(),
+    }
 }
 
-struct Demo;
+/// Uses [`pollster::block_on`] to enable `async` on test functions.
+///
+/// # Example
+///
+/// ```ignore
+/// #[pollster::test]
+/// async fn main() {
+///     let my_fut = async {};
+///
+///     my_fut.await;
+/// }
+/// ```
+///
+/// [`pollster::block_on`]: https://docs.rs/pollster/0.3.0/pollster/fn.block_on.html
+#[proc_macro_attribute]
+pub fn test(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let item = TokenStream::from(item);
+    let backup = item.clone();
 
-fn block_on<F: Future + std::marker::Unpin>(future: F) -> F::Output {
-    let mut fut: Pin<&mut F> = std::pin::Pin::new(&mut future);
-    let waker: Waker = dummy_waker();
-    let mut cx: Context<'_> = Context::from_waker(&waker);
-    loop {
-        if let Poll::Ready(output) = fut.as_mut().poll(&mut cx) {
-            return output;
+    match test_internal(attr.into(), item) {
+        Ok(output) => output.into_token_stream().into(),
+        Err(error) => TokenStream::from_iter([error.into_compile_error(), backup]).into(),
+    }
+}
+
+fn test_internal(attr: TokenStream, item: TokenStream) -> Result<ItemFn> {
+    let mut item = common(attr, item)?;
+    item.attrs.push(syn::parse_quote! { #[test] });
+
+    Ok(item)
+}
+
+fn common(attr: TokenStream, item: TokenStream) -> Result<ItemFn> {
+    let mut item: ItemFn = syn::parse2(item)?;
+
+    if item.sig.asyncness.is_some() {
+        item.sig.asyncness = None;
+    } else {
+        return Err(Error::new_spanned(item, "expected function to be async"));
+    }
+
+    let path = if attr.is_empty() {
+        quote::quote! { ::pollster }
+    } else {
+        let attr: MetaNameValue = syn::parse2(attr)?;
+
+        if attr.path.is_ident("crate") {
+            match attr.value {
+                Expr::Lit(ExprLit {
+                    attrs,
+                    lit: Lit::Str(str),
+                }) if attrs.is_empty() => TokenStream::from_str(&str.value())?,
+                Expr::Path(ExprPath {
+                    attrs,
+                    qself: None,
+                    path,
+                }) if attrs.is_empty() => path.to_token_stream(),
+                _ => {
+                    return Err(Error::new_spanned(
+                        attr.value,
+                        "expected valid path, e.g. `::package_name`",
+                    ))
+                }
+            }
+        } else {
+            return Err(Error::new_spanned(attr.path, "expected `crate`"));
         }
-    }
-}
+    };
 
-impl Future for Demo {
-    type Output = ();
+    let span = item.span();
+    let block = item.block;
+    item.block = syn::parse_quote_spanned! {
+        span =>
+        {
+            #path::block_on(async {
+                #block
+            })
+        }
+    };
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        println!("poll");
-        std::task::Poll::Ready(())
-    }
-}
-
-fn dummy_waker() -> Waker {
-    static DATA: () = ();
-    unsafe {
-        Waker::from_raw(RawWaker::new(&DATA as *const _, &VTABLE))
-    }
-}
-
-static VTABLE: RawWakerVTable = RawWakerVTable::new(vtable_clone, vtable_wake, vtable_wake_by_ref, vtable_drop);
-
-unsafe fn vtable_clone(_p: *const ()) -> RawWaker {
-    RawWaker::new(_p, &VTABLE)
-}
-
-unsafe fn vtable_wake(_p: *const ()) {}
-
-unsafe fn vtable_wake_by_ref(_p: *const ()) {}
-
-unsafe fn vtable_drop(_p: *const ()) {}
-
-fn main() {
-    block_on(demo());
+    Ok(item)
 }
