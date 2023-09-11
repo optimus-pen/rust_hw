@@ -22,18 +22,6 @@ impl Wake for Task {
     }
 }
 
-struct Demo;
-
-impl Future for Demo {
-    type Output = ();
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        println!("hello world");
-        std::task::Poll::Ready(())
-    }
-}
 fn block_on<F: Future>(future: F) -> F::Output {
     let mut fut = std::pin::pin!(future);
     let signal = Arc::new(Signal::new());
@@ -53,4 +41,17 @@ fn block_on<F: Future>(future: F) -> F::Output {
             signal.wait();
         })
     })
+}
+
+struct Demo;
+
+impl Future for Demo {
+    type Output = ();
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        println!("hello world");
+        std::task::Poll::Ready(())
+    }
 }

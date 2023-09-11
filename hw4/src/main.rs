@@ -6,7 +6,7 @@ mod reactor;
 async fn demo() {
     let (tx, rx) = async_channel::bounded(1);
     spawn(demo2(tx));
-    println!("hello world!");
+    println!("hello world1!");
     let _ = rx.recv().await;
 }
 
